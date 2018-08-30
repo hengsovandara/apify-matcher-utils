@@ -229,8 +229,8 @@ function utils(Apify, requestQueue){
     return result;
   }
   
-  async function filterRequests(page, filters){
-    const { noRedirects, blockResources, timeout, wait, conTimeout, url } = filters;
+  async function filterRequests(page, filters, debug){
+    const { noRedirects, blockResources, timeout, wait, conTimeout, blacklist, url } = filters;
     
     await page.setRequestInterception(noRedirects || !!blockResources);
     if(!blockResources) return;
@@ -271,33 +271,10 @@ function utils(Apify, requestQueue){
       break;
     }
     
-    const blacklist = [
+    blacklist = blacklist !== undefined ? blacklist : [
       'https://www.googleadservices.com/pagead/conversion.js',
       'https://www.google-analytics.com/analytics.js',
     ]
-    
-    // Resource Connection checker
-    // let interval;
-    // let connected = false;
-    
-    // setTimeout(function(){ clearInterval(interval) }, timeout);
-    
-    // if(conTimeout && !connected && !page.noReconnects){
-    //   interval = setTimeout(async function(){
-    //     if(connected){
-    //       await page.waitFor(1);
-    //       page.noReconnects = true;
-    //       return clearInterval(interval);
-    //     }
-          
-    //     console.log('NO CONNECTION');
-    //     //{ waitUntil: wait || 'domcontentloaded', timeout: timeout || 30000 }
-    //     // return await Promise.race[ 
-    //     //   page.goto(url, { waitUntil: wait || 'networkidle2', timeout: timeout || 30000 }),
-    //     //   new Promise( resolve => setTimeout(resolve, 4000) )
-    //     // ]
-    //   }, conTimeout || 6000);
-    // }
     
     page.on('request', req => allow(req, page));
     return;
@@ -309,8 +286,8 @@ function utils(Apify, requestQueue){
       const isResource = types.includes(req.resourceType()) || exts.includes(req.url()) || blacklist.includes(req.url());
       
       !isResource // (noRedirects && !isRedirect) 
-        ? req.continue() //&& console.log('[MATCHER] Alowed', req.resourceType(), req.url())
-        : req.abort() //&& console.log('[MATCHER] Blocked', req.resourceType(), req.url())
+        ? req.continue() && debug && console.log('[MATCHER] Alowed', req.resourceType(), req.url())
+        : req.abort() && debug && console.log('[MATCHER] Blocked', req.resourceType(), req.url())
     }
     
   }
@@ -324,6 +301,29 @@ module.exports = utils;
 /**
  * No connection checker example
  */
+ 
+// Resource Connection checker
+// let interval;
+// let connected = false;
+
+// setTimeout(function(){ clearInterval(interval) }, timeout);
+
+// if(conTimeout && !connected && !page.noReconnects){
+//   interval = setTimeout(async function(){
+//     if(connected){
+//       await page.waitFor(1);
+//       page.noReconnects = true;
+//       return clearInterval(interval);
+//     }
+      
+//     console.log('NO CONNECTION');
+//     //{ waitUntil: wait || 'domcontentloaded', timeout: timeout || 30000 }
+//     // return await Promise.race[ 
+//     //   page.goto(url, { waitUntil: wait || 'networkidle2', timeout: timeout || 30000 }),
+//     //   new Promise( resolve => setTimeout(resolve, 4000) )
+//     // ]
+//   }, conTimeout || 6000);
+// }
  
 //let response;
 // let num = 30;
