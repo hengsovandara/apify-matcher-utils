@@ -230,7 +230,7 @@ function utils(Apify, requestQueue){
   }
   
   async function filterRequests(page, filters, debug){
-    const { noRedirects, blockResources, timeout, wait, conTimeout, blacklist, url } = filters;
+    const { noRedirects, blockResources, timeout, wait, url } = filters;
     
     await page.setRequestInterception(noRedirects || !!blockResources);
     if(!blockResources) return;
@@ -271,7 +271,7 @@ function utils(Apify, requestQueue){
       break;
     }
     
-    blacklist = blacklist !== undefined ? blacklist : [
+    const blacklist = filters.blacklist !== undefined ? filters.blacklist : [
       'https://www.googleadservices.com/pagead/conversion.js',
       'https://www.google-analytics.com/analytics.js',
     ]
@@ -280,8 +280,10 @@ function utils(Apify, requestQueue){
     return;
     
     function allow(req, page){
-      if(url !== req.url())
+      if(encodeURI(url) !== req.url() && !page.isConnected){
+        debug && console.log('[MATCHER] Connected', url);
         page.isConnected = true;
+      }
       // const isRedirect = req.isNavigationRequest() && req.redirectChain().length;
       const isResource = types.includes(req.resourceType()) || exts.includes(req.url()) || blacklist.includes(req.url());
       
