@@ -71,7 +71,8 @@ function utils(Apify, requestQueue){
       }
       
       if(url && url.length){
-        await reqQueue.addRequest(new Apify.Request({ keepUrlFragment: true, ...urlObj, url, userData }, { forefront: userData.forefront }));
+        console.log({ keepUrlFragment: true, ...urlObj, url, userData }, { forefront: urlObj.forefront });
+        await reqQueue.addRequest(new Apify.Request({ keepUrlFragment: true, ...urlObj, url, userData, id: null }, { forefront: urlObj.forefront }));
         this.debug && console.log(`[MATCHER] Queued ${requestPendingCount(reqQueue)}`, trunc(url, 150, true), { userDataSize: Object.keys(userData).length });
         userData.initial && this.initialRequestsAmount++;
         
@@ -204,10 +205,13 @@ function utils(Apify, requestQueue){
     else if(func)
       result = await func(data);
     
-    const { skipUrls, limit, showSkip, urls, status, skip } = result || {};
+    const { skipUrls, limit, showSkip, urls, status, skip, reclaim } = result || {};
     
     if(!result)
       return console.log('[MATCHER] Empty Result', result);
+      
+    if(reclaim)
+      await queueUrls([ { ...reclaim.userData, url: reclaim.url + '#' + new Date().getTime(), forefront: true } ], requestQueue, limit);
     
     // Add urls to queue
     if(!skipUrls && urls)
