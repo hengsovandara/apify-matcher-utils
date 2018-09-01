@@ -71,7 +71,7 @@ function utils(Apify, requestQueue){
       }
       
       if(url && url.length){
-        await reqQueue.addRequest(new Apify.Request({ ...urlObj, url, userData }));
+        await reqQueue.addRequest(new Apify.Request({ keepUrlFragment: true, ...urlObj, url, userData }, { forefront: userData.forefront }));
         this.debug && console.log(`[MATCHER] Queued ${requestPendingCount(reqQueue)}`, trunc(url, 150, true), { userDataSize: Object.keys(userData).length });
         userData.initial && this.initialRequestsAmount++;
         
