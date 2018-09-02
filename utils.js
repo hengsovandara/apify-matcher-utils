@@ -64,7 +64,6 @@ function utils(Apify, requestQueue){
       userData  = urlObj.userData ? { ...urlObj.userData, initial } : { ...urlObj, initial };
       
       delete userData.reclaim;
-      delete userData.id;
       delete urlObj.id;
       
       if(initial){
