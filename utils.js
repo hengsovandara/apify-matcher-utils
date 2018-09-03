@@ -212,8 +212,10 @@ function utils(Apify, requestQueue){
     if(!result)
       return console.log('[MATCHER] Empty Result', result);
       
-    if(reclaim)
-      await queueUrls([ { ...reclaim.userData, url: reclaim.url + '#' + new Date().getTime(), forefront: true } ], requestQueue, limit);
+    if(reclaim){
+      await queueUrls([ { userData: reclaim.userData, url: reclaim.url, forefront: true, uniqueKey: new Date().getTime() } ], requestQueue, limit);
+      return;
+    }
     
     // Add urls to queue
     if(!skipUrls && urls)
@@ -236,14 +238,21 @@ function utils(Apify, requestQueue){
   }
   
   async function filterRequests(page, filters, debug){
-    const { noRedirects, blockResources, timeout, wait, url } = filters;
+    const { blockResources, wait, url, conTimeout } = filters;
     
-    await page.setRequestInterception(noRedirects || !!blockResources);
-    if(!blockResources) return;
+    page.removeAllListeners('request');
+    
+    const interceptRequests = !!blockResources;
+    await page.setRequestInterception(interceptRequests);
+    if(!interceptRequests)
+      return;
     
     const scriptTypes = [ 'script', 'other' ];
-    const styleTypes  = [ 'image', 'media', 'font', 'texttrack', 'beacon', 'imageset', 'object', 'csp_report', 'stylesheet' ];
-    const styleExts   = [ '.jpg', 'jpeg', '.png', '.gif', '.css'];
+    const mediaTypes  = [ 'image', 'media', 'imageset', 'object' ];
+    const specialTypes = [ 'beacon', 'csp_report' ];
+    const styleTypes  = [ 'font', 'texttrack', 'stylesheet' ];
+    const mediaExts   = [ '.jpg', 'jpeg', '.png', '.gif' ];
+    const styleExts   = [ '.css' ];
     const scriptExts  = [ '.js' ];
     const dataTypes   = [ 'xhr' ];
     const dataExts    = [ '.json' ];
@@ -257,6 +266,10 @@ function utils(Apify, requestQueue){
         types = styleTypes;
         exts  = styleExts;
       break;
+      case 'visual':
+        types = [ ...styleTypes, ...mediaTypes ];
+        exts  = [ ...styleExts, ...mediaExts ];
+      break;
       case 'script':
       case 'scripts':
         types = scriptTypes;
@@ -265,33 +278,41 @@ function utils(Apify, requestQueue){
       case 'image':
       case 'images':
       case 'img':
-        types = styleTypes.slice(0, 8);
-        exts  = styleExts.slice(0, 4);
+      case 'media':
+        types = mediaTypes;
+        exts  = mediaExts;
+      break;
+      case 'special':
+        types = specialTypes;
+        exts  = [];
       break;
       case 'data':
         types = dataTypes;
         exts  = dataExts;
+      break;
       default:
-        types = [ ...styleTypes, ...scriptTypes, ...dataTypes ];
-        exts  = [ ...styleExts, ...scriptExts, ...dataExts ];
+        types = [ ...styleTypes, ...scriptTypes, ...dataTypes, ...specialTypes, ...mediaTypes ];
+        exts  = [ ...styleExts, ...scriptExts, ...dataExts, ...mediaExts ];
       break;
     }
     
     const blacklist = filters.blacklist !== undefined ? filters.blacklist : [
-      'https://www.googleadservices.com/pagead/conversion.js',
-      'https://www.google-analytics.com/analytics.js',
-    ]
+      // 'https://www.googleadservices.com/pagead/conversion.js',
+      // 'https://www.google-analytics.com/analytics.js',
+    ];
+    
+    // console.log(types, exts);
     
     page.on('request', req => allow(req, page));
     return;
     
     function allow(req, page){
-      if(encodeURI(url) !== req.url() && !page.isConnected){
+      if(conTimeout && encodeURI(url) !== req.url() && !page.isConnected){
         debug && console.log('[MATCHER] Connected', url);
         page.isConnected = true;
       }
       // const isRedirect = req.isNavigationRequest() && req.redirectChain().length;
-      const isResource = types.includes(req.resourceType()) || exts.includes(req.url()) || blacklist.includes(req.url());
+      const isResource = ~types.indexOf(req.resourceType()) || ~exts.indexOf(req.url()) || ~blacklist.indexOf(req.url());
       
       !isResource // (noRedirects && !isRedirect) 
         ? req.continue() && debug && console.log('[MATCHER] Alowed', req.resourceType(), req.url())
