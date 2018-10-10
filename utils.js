@@ -10,16 +10,31 @@ function utils(Apify, requestQueue){
     shot,
     error,
     clearText,
+    onlyText,
     clearNum,
     trunc,
     randomNum,
+    getDate,
+    getCurrency,
+    
     getSpreadsheet,
     getExchangeRate,
+    
+    reclaimRequest,
     queueUrls,
     
     getPageMatchSettings,
     filterRequests,
+    checkCaptcha,
     pageMatcherResult,
+    
+    evaluatePage,
+    modifyResult,
+    
+    
+    gotoFunction,
+    handlePageFunction,
+    isFinishedFunction,
   }
   
   async function wait(delay){
@@ -28,7 +43,7 @@ function utils(Apify, requestQueue){
   
   async function shot(p, h){
     h = h || 'local';
-    const name = `${h}_${new Date().getTime()}.png`;
+    const name = `${h}_${new Date().getTime()}`;
     await Apify.setValue(name, await p.screenshot({ fullPage: true }), { contentType: 'image/png' });
     console.log('[MATCHER] Screenshot', name);
   }
@@ -39,6 +54,12 @@ function utils(Apify, requestQueue){
     //await shot(page, host);
     page && takeShot && await shot(page, status);
     await Apify.setValue(status, { status, error, url });
+    return;
+  }
+  
+  async function reclaimRequest(request, reqQueue){
+    const { userData, url } = request;
+    await reqQueue.addRequest(new Apify.Request({ keepUrlFragment: true, url, userData, uniqueKey: 'reclaim_' + new Date().getTime() }, { forefront: true }));
     return;
   }
   
@@ -69,7 +90,6 @@ function utils(Apify, requestQueue){
       if(initial){
         delete userData.url;
         delete userData.urls;
-        
       }
       
       if(url && url.length){
@@ -102,6 +122,10 @@ function utils(Apify, requestQueue){
   
   function clearNum(num){
     return typeof num === 'string' ? parseFloat(num.replace(/(?!-)[^0-9.,]/g, '').replace(/[,]/gm, '.')) : num;
+  }
+  
+  function onlyText(text){
+    return typeof text === 'string' ? clearText(text.replace(/\d+/g, '')) : text;
   }
   
   function randomNum(start = 0, end = 1){
@@ -165,8 +189,8 @@ function utils(Apify, requestQueue){
     
     let pageMatch = pageMatcherData.find(
       matcher => matcherLabel 
-        ? matcher.label === matcherLabel 
-        : matcher.url === url || matcher.match instanceof Array ? matcher.match.filter( m => url.includes(m) ).length : url.includes(matcher.match)
+        ? matcher.label === matcherLabel || matcher.matcherLabel === matcherLabel 
+        : matcher.url === url || (matcher.match instanceof Array ? matcher.match.filter( m => url.includes(m) ).length : url.includes(matcher.match))
     );
     
     if(!pageMatch){
@@ -178,7 +202,7 @@ function utils(Apify, requestQueue){
         return { status: 'ignore_match', msg: 'ignoreMatch is matching the url' }
     }
     
-    if(!pageMatch || !pageMatch.func)
+    if(!pageMatch)
       return { err: 'missing_page_setting', msg: 'Missing PageMatcher setting for this page' };
       
     const blockResources  = userData.blockResources !== undefined ? userData.blockResources : pageMatch.blockResources;
@@ -198,14 +222,26 @@ function utils(Apify, requestQueue){
     requestQueue = requestQueue || global.requestQueue;
       
     const { request, page, response, puppeteerPool, match } = data;
-    const { template, func } = match;
+    const { template, func, schema, modify, actions, debug } = match;
     
     let result;
+    
+    if(actions && actions.before)
+      await actions.before(data);
     
     if(data.result)
       result = data.result;
     else if(func)
       result = await func(data);
+      
+    if(schema){
+      schema.waitFor && await page.waitFor(schema.waitFor);
+      result = await page.evaluate(evaluatePage, { schema, extras: match });
+    }
+    
+    if(modify)
+      result = await modifyResult(result, modify, { url: page.url(), ...request.userData });
+      
     
     const { skipUrls, limit, showSkip, urls, status, skip, reclaim } = result || {};
     
@@ -225,15 +261,15 @@ function utils(Apify, requestQueue){
     if(skip || status === 'done')
       return showSkip && console.log('[MATCHER] Skipping Result', result);
     
-    if(status)
-      console.log('[MATCHER] Result', status);
-    
     // Generate template
     if(template)
       result = result instanceof Array ? result.map(template) : template(result);
-    
+      
     // Adds result to Apify Store
-    await Apify.pushData(result);
+    !debug 
+      ? await Apify.pushData(result)
+      : console.log({ result });
+      
     return result;
   }
   
@@ -320,6 +356,243 @@ function utils(Apify, requestQueue){
     }
     
   }
+  
+  async function checkCaptcha(page){
+    const url = page.url();
+    return ( url.includes('ipv4.google') || url.includes('google.com/sorry') || 
+      await page.$eval('body', body => body ? [ "с вашего IP-адреса", 'CAPTCHA' ].find( str => !!~body.textContent.indexOf(str)) : false )) 
+        ? true
+        : false
+  }
+  
+  
+  // Puppeteer Crawler predefined helper methods
+  async function gotoFunction({ request, page, puppeteerPool }, extras = {}){
+    const { url, userData } = request;
+    const { pageMatcherSettings, requestQueue } = extras;
+    
+    const match = await getPageMatchSettings(pageMatcherSettings, request);
+    const { err, msg, clearCookies, timeout, wait, blockResources, disableJs, disableCache, noRedirects, conTimeout, debug } = match;
+    
+    // These settings can be specified for every page or for pageMatcher
+    if(err)
+      throw(err);
+    
+    // Hide the puppeteer
+    await page.setUserAgent(await Apify.utils.getRandomUserAgent());
+    await Apify.utils.puppeteer.hideWebDriver(page);
+    await page.setViewport({ width: 1280, height: 800 });
+    
+    // Clier cookies
+    if(clearCookies){
+      const cookies = await page.cookies();
+      await page.deleteCookie(...cookies);
+    }
+    // await page.setViewport({ width: 1280, height: 800 });
+    
+    // Configure puppeteer page
+    await page.setJavaScriptEnabled(!disableJs);
+    await page.setCacheEnabled(!disableCache);
+    
+    await filterRequests(page, { noRedirects, blockResources, timeout, wait, conTimeout, url }, debug);
+    // intercept requests
+    
+    console.log('[MATCHER] Opening', trunc(request.url, 150, true));
+    console.time('[MATCHER] Opened ' + trunc(request.url, 150, true));
+    
+    let response;
+    
+    if(conTimeout){
+      
+      let num = (timeout || 30000) / conTimeout;
+      let res;
+      
+      while(!page.isConnected && num > 0){
+        num--;
+        page.removeAllListeners('request');
+        await page.goto('about:blank');
+        
+        if(!page.isConnected){
+          await filterRequests(page, { noRedirects, blockResources, timeout, wait, conTimeout, url }, false);
+          res = page.goto(url, { waitUntil: wait || 'networkidle2', timeout: timeout || 30000 });
+        }
+        
+        await new Promise( resolve => setTimeout(resolve, conTimeout) );
+        
+        if(num <= 0){
+          throw 'TimeoutError';
+        }
+      }
+  
+      // console.log('PAGE IS CONNECTED', page.isConnected);
+      response = await res;
+    
+    } else {
+      // await filterRequests(page, { noRedirects, blockResources, timeout, wait, conTimeout, url }, false);
+      response = page.goto(url, { waitUntil: wait || 'domcontentloaded', timeout: timeout || 30000 });
+    
+    }
+    
+    return response;
+  }
+
+  async function handlePageFunction(data, extras = {}){
+    
+    const { pageMatcherSettings, requestQueue, evaluate } = extras;
+    
+    let result;
+    
+    if(await checkCaptcha(data.page) || data.response.status() > 400){
+      
+      const browser = await data.page.browser();
+      await data.puppeteerPool.retire(browser);
+      
+      await reclaimRequest(data.request, requestQueue);
+        
+      console.log('CAPTCHA or STATUS error', data.response.status());
+      
+      return;
+      // throw 'RECLAIM';
+    }
+    
+    if(pageMatcherSettings){
+      data.match = await getPageMatchSettings(pageMatcherSettings, data.request);
+      result = await pageMatcherResult(data, requestQueue);
+    }
+    
+    console.timeEnd('[MATCHER] Opened ' + trunc(data.request.url, 150, true));
+    
+    // if(evaluate)
+    //   result = await evaluate(data);
+    
+    return result;
+  }
+  
+  async function isFinishedFunction(){
+    if(global.allowTurnOff)
+      return true;
+    
+    await new Promise(res => setTimeout(res, 5000));
+    console.log('Delay crawler turn off for', 5 + 's');
+    global.allowTurnOff = true;
+    return;
+  }
+  
+  function modifyResult(result, modify, userData){
+    // console.log({ result, modify, userData });
+    switch(typeof modify){
+      case 'function':
+        return modify(result, userData); 
+      case 'object':
+        Object.keys(modify).forEach( key => {
+          
+          result[key] = typeof modify[key] === 'function'
+            ? modify[key](result[key], result, userData) || result[key] || modify[key]
+            : result[key] = result[key] || modify[key];
+            
+        });
+        return result;
+      default:
+        return result;
+    }
+  }
+  
+  function evaluatePage({ schema, extras }){
+    const doc = window.document;
+    const debug = extras && extras.debug;
+    
+    return Object.keys(schema).reduce(schemaToResult, {});
+    
+    // extracts data using schema
+    function schemaToResult(obj, key){
+      let rule = schema[key];
+      
+      if(typeof rule === 'string'){
+        debug ? obj[`_${key}`] = { ...ruleToObj(rule), rule } : null;
+        return Object.assign( obj, { [key]: stringResult(ruleToObj(rule)) });
+      }
+          
+      if(rule instanceof Array && rule.length === 1){
+        const { selector, attr } = ruleToObj(rule[0]);
+        debug ? obj[`_${key}`] = { selector, attr, rule } : null;
+        
+        const elems = attr === 'nodeValue'
+          ? doc.querySelector(selector) && [ ...doc.querySelector(selector).childNodes ].filter(el => el.nodeType === 3)
+          : [ ...doc.querySelectorAll(selector) ];
+          
+        const result = elems.map( elem => stringResult({ elem, attr }));
+        return Object.assign( obj, { [key]: result });
+      }
+      
+      if(rule instanceof Array){
+        debug ? obj[`_${key}`] = { ...ruleToObj(rule), rule } : null;
+        return Object.assign( obj, { [key]: rule.map( r => stringResult(ruleToObj(r))) });
+      }
+      
+      return Object.assign( obj, { [key]: rule });
+    }
+    
+    function ruleToObj(rule, separator = ' => '){
+      let parts = rule.split(separator);
+      const selector  = parts[0];
+      const lastSelector = selector.split(' ').pop();
+      const attr      = parts[1] 
+        || lastSelector.includes('img')     && 'src'
+        || lastSelector.indexOf('a') === 0  && 'href'
+        || lastSelector.includes('meta')    && 'content';
+      return { selector, attr }
+    }
+    
+    function stringResult({ elem, attr, selector }){
+      elem = elem || doc.querySelector(selector);
+      
+      if(!elem)
+        return null;
+      
+      // if(attr === 'nodeValue')
+      //   return [ ...elem.childNodes ].filter(el => el.nodeType === 3).map(el => el.textContent);
+      
+      return attr && attr !== 'nodeValue' 
+        ? elem.getAttribute(attr) 
+        : elem.textContent && utilsClearText(elem.textContent);
+    }
+    
+    function utilsClearText(text){
+      return text.trim().replace(/\s{2,}/g, ' ').replace(/(\r\n|\n|\r|(  ))/gm,'')
+    }
+  }
+  
+  function getDate(date, cfg = {}){
+    const { sep } = cfg;
+    const months = ["January", "February", "March", "April", "May", "June","July", "August", "September", "October", "November", "December"];
+    date = date ? new Date(date) : new Date();
+    
+    const onejan = new Date(date.getFullYear(), 0, 1);
+    
+    const monthNum  = (date.getMonth() + 1) < 10 ? '0' + (date.getMonth() + 1) : (date.getMonth() + 1);
+    const dayNum    = date.getDate() < 10 ? '0' + date.getDate() : date.getDate();
+    
+    return {
+      month:  months[date.getUTCMonth()].substring(0, 3),
+      week:   'Week ' + Math.ceil((((date.getTime() - onejan) / 86400000) + onejan.getDay() + 1) / 7),
+      year:   date.getFullYear(),
+      date:   [ dayNum, monthNum, date.getFullYear() ].join(sep || '-'),
+      string:   date.toUTCString()
+    }
+  }
+  
+  function getCurrency(text){
+    if(!text)
+      return null;
+      
+    if(~text.indexOf('£'))
+      return 'GBP';
+    if(~text.indexOf('€'))
+      return 'EUR';
+      
+    return 'USD';
+  }
+  
 }
 
 module.exports = utils;
