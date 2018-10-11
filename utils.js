@@ -67,7 +67,7 @@ function utils(Apify, requestQueue){
       userData, 
       uniqueKey: 'reclaim_' + new Date().getTime(),
       retryCount: retry ? request.retryCount + 1 : 0
-    }, { forefront: true }));
+    }, { forefront: retry ? false : true }));
     return;
   }
   
@@ -91,6 +91,9 @@ function utils(Apify, requestQueue){
       urlObj    = typeof urls[i] === 'string' ? { url: urls[i] } : urls[i];
       url       = urlObj.url;
       userData  = urlObj.userData ? { ...urlObj.userData, initial } : { ...urlObj, initial };
+      
+      // TODO!!!!
+      // merge matcher data to userData properly
       
       delete userData.reclaim;
       delete urlObj.id;
@@ -195,6 +198,8 @@ function utils(Apify, requestQueue){
   async function getPageMatchSettings(pageMatcherData, { userData, url }){
     const { matcherLabel } = userData;
     
+    // console.log({ url, userData });
+    
     let pageMatch = pageMatcherData.find(
       matcher => matcherLabel 
         ? matcher.label === matcherLabel || matcher.matcherLabel === matcherLabel 
@@ -230,25 +235,33 @@ function utils(Apify, requestQueue){
     requestQueue = requestQueue || global.requestQueue;
       
     const { request, page, response, puppeteerPool, match } = data;
-    const { template, func, schema, modify, actions, debug } = match;
+    const { template, func, schema, modify, actions, debug, evaluate, waitFor } = match;
     
     let result;
     
+    waitFor && await page.waitFor(waitFor, { visible: true });
+    
+    if(match.shot)
+      await shot(page, typeof match.shot === 'string' && match.shot);
+    
     if(actions && actions.before)
-      await actions.before(data);
+      result = await actions.before(data, result);
     
     if(data.result)
-      result = data.result;
+      result = { ...data.result, ...(result || {}) };
     else if(func)
-      result = await func(data);
-      
+      result = await func(data, result);
+    
     if(schema){
-      schema.waitFor && await page.waitFor(schema.waitFor, { visible: true });
-      result = await page.evaluate(evaluatePage, { schema, extras: match });
+      const res = await page.evaluate(evaluatePage, { schema, extras: match });
+      result = res ? Object.assign(result || {}, res) : result;
     }
     
+    if(evaluate)
+      result = await page.evaluate(evaluate, { match, result });
+    
     if(modify)
-      result = await modifyResult(result, modify, { url: page.url(), ...request.userData });
+      result = await modifyResult(result, modify, { url: request.url, ...request.userData });
       
     if(actions && actions.after)
       result = await actions.after(data, result);
