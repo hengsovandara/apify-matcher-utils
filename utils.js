@@ -6,6 +6,7 @@ function utils(Apify, requestQueue){
   requestQueue = requestQueue || global.requestQueue;
   
   return {
+    // General
     wait,
     shot,
     error,
@@ -16,22 +17,23 @@ function utils(Apify, requestQueue){
     randomNum,
     getDate,
     getCurrency,
-    
+    // External
     getSpreadsheet,
     getExchangeRate,
-    
+    // Apify Url / request utils
     reclaimRequest,
     queueUrls,
-    
-    getPageMatchSettings,
+    // Puppeteer
     filterRequests,
+    generateCookies,
     checkCaptcha,
+    // Matcher
+    getPageMatchSettings,
     pageMatcherResult,
-    
+    // Matcher Schema
     evaluatePage,
     modifyResult,
-    
-    
+    // Matcher Apify
     gotoFunction,
     handlePageFunction,
     isFinishedFunction,
@@ -57,9 +59,15 @@ function utils(Apify, requestQueue){
     return;
   }
   
-  async function reclaimRequest(request, reqQueue){
+  async function reclaimRequest(request, reqQueue, retry){
     const { userData, url } = request;
-    await reqQueue.addRequest(new Apify.Request({ keepUrlFragment: true, url, userData, uniqueKey: 'reclaim_' + new Date().getTime() }, { forefront: true }));
+    await reqQueue.addRequest(new Apify.Request({ 
+      keepUrlFragment: true, 
+      url, 
+      userData, 
+      uniqueKey: 'reclaim_' + new Date().getTime(),
+      retryCount: retry ? request.retryCount + 1 : 0
+    }, { forefront: true }));
     return;
   }
   
@@ -235,24 +243,31 @@ function utils(Apify, requestQueue){
       result = await func(data);
       
     if(schema){
-      schema.waitFor && await page.waitFor(schema.waitFor);
+      schema.waitFor && await page.waitFor(schema.waitFor, { visible: true });
       result = await page.evaluate(evaluatePage, { schema, extras: match });
     }
     
     if(modify)
       result = await modifyResult(result, modify, { url: page.url(), ...request.userData });
       
+    if(actions && actions.after)
+      result = await actions.after(data, result);
+      
     
-    const { skipUrls, limit, showSkip, urls, status, skip, reclaim } = result || {};
+    const { skipUrls, limit, showSkip, urls, status, skip, reclaim, retry } = result || {};
     
     if(!result)
       return console.log('[MATCHER] Empty Result', result);
       
     if(reclaim){
-      await queueUrls([ { userData: reclaim.userData, url: reclaim.url, forefront: true, uniqueKey: new Date().getTime() } ], requestQueue, limit);
+      await reclaimRequest(request, requestQueue);
       return;
     }
     
+    if(retry){
+      await reclaimRequest(request, requestQueue, retry);
+      return;
+    }
     // Add urls to queue
     if(!skipUrls && urls)
       await queueUrls(result.urls, requestQueue, limit);
@@ -365,14 +380,42 @@ function utils(Apify, requestQueue){
         : false
   }
   
+  function generateCookies(cookieData){
+    if(!cookieData)
+      return;
+      
+    if(cookieData instanceof Array)
+      return cookieData;
+      
+    const general = {
+      // domain: '.asos.com',
+      // url: 'https://www.asos.com',
+      path: '/',
+      sameSite: 'no_restriction',
+      httpOnly: false,
+      secure: false,
+      session: false,
+      expires: new Date().getTime() + 86400000,
+      ...(cookieData.general || {})
+    }
+      
+    return Object.keys(cookieData).reduce( (arr, key) => {
+      return key !== 'general' 
+        ? arr.concat([{ name: key, value: cookieData[key], ...general }])
+        : arr;
+    }, []);
+  }
+  
   
   // Puppeteer Crawler predefined helper methods
   async function gotoFunction({ request, page, puppeteerPool }, extras = {}){
     const { url, userData } = request;
     const { pageMatcherSettings, requestQueue } = extras;
     
+    const client = await page.target().createCDPSession();
     const match = await getPageMatchSettings(pageMatcherSettings, request);
-    const { err, msg, clearCookies, timeout, wait, blockResources, disableJs, disableCache, noRedirects, conTimeout, debug } = match;
+    const { err, msg, clearCookies, timeout, wait, blockResources, disableJs, disableCache, noRedirects, conTimeout, debug, viewport } = match;
+    const cookieData = generateCookies(match.cookies || extras.cookies);
     
     // These settings can be specified for every page or for pageMatcher
     if(err)
@@ -385,10 +428,15 @@ function utils(Apify, requestQueue){
     
     // Clier cookies
     if(clearCookies){
-      const cookies = await page.cookies();
+      const cookies = await page.cookies(request.url);
       await page.deleteCookie(...cookies);
     }
-    // await page.setViewport({ width: 1280, height: 800 });
+    
+    if(cookieData)
+      await page.setCookie(...cookieData);
+
+    if(viewport)
+      await page.setViewport({ width: viewport.width || 1280, height: viewport.height || 800 });
     
     // Configure puppeteer page
     await page.setJavaScriptEnabled(!disableJs);
@@ -429,9 +477,12 @@ function utils(Apify, requestQueue){
     
     } else {
       // await filterRequests(page, { noRedirects, blockResources, timeout, wait, conTimeout, url }, false);
-      response = page.goto(url, { waitUntil: wait || 'domcontentloaded', timeout: timeout || 30000 });
+      response = await page.goto(url, { waitUntil: wait || 'domcontentloaded', timeout: timeout || 30000 });
     
     }
+    
+    if(clearCookies)
+      await client.send( 'Network.clearBrowserCookies' );
     
     return response;
   }
@@ -487,7 +538,7 @@ function utils(Apify, requestQueue){
         Object.keys(modify).forEach( key => {
           
           result[key] = typeof modify[key] === 'function'
-            ? modify[key](result[key], result, userData) || result[key] || modify[key]
+            ? modify[key](result[key], result, userData) || result[key] || null
             : result[key] = result[key] || modify[key];
             
         });
