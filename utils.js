@@ -519,12 +519,15 @@ function utils(Apify, requestQueue){
     return result;
   }
   
-  async function isFinishedFunction(){
-    if(global.allowTurnOff)
+  async function isFinishedFunction(func){
+    if(global.allowTurnOff){
+      func && await func();
+      console.log('[MATCHER] Actor Done');
       return true;
+    }
     
     await new Promise(res => setTimeout(res, 5000));
-    console.log('Delay crawler turn off for', 5 + 's');
+    console.log('[MATCHER] Delay actors turn off time by', 5 + 's');
     global.allowTurnOff = true;
     return;
   }
