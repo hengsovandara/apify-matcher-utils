@@ -283,7 +283,7 @@ function utils(Apify, requestQueue){
     }
     // Add urls to queue
     if(!skipUrls && urls)
-      await queueUrls(result.urls, requestQueue, limit);
+      await queueUrls(result.urls, requestQueue, match.limit || limit);
     
     // Skip result
     if(skip || status === 'done')
@@ -606,7 +606,8 @@ function utils(Apify, requestQueue){
       const attr      = parts[1] 
         || lastSelector.includes('img')     && 'src'
         || lastSelector.indexOf('a') === 0  && 'href'
-        || lastSelector.includes('meta')    && 'content';
+        || lastSelector.includes('meta')    && 'content'
+        || lastSelector.includes('input')   && 'value'
       return { selector, attr }
     }
     
