@@ -71,12 +71,17 @@ function utils(Apify, requestQueue){
     return;
   }
   
-  async function queueUrls(urls, reqQueue, limit, initial){
+  async function queueUrls(urls, reqQueue, extras = {}){
+    
+    const limit = typeof extras === 'number' && extras || extras.limit;
+    const initial = extras.initial;
+    const debug   = extras.debug;
+    
     global.allowTurnOff = false;
     if(typeof urls === 'function')
       urls = await urls();
     if(!urls || !urls.length) 
-      return this.debug && console.log(`[MATCHER] Queueing empty URLS`);
+      return debug && console.log(`[MATCHER] Queueing empty URLS`);
     
     if(limit)
       urls = urls.slice(0, limit);
@@ -106,7 +111,7 @@ function utils(Apify, requestQueue){
       if(url && url.length){
         // console.log({ keepUrlFragment: true, ...urlObj, url, userData }, { forefront: urlObj.forefront });
         await reqQueue.addRequest(new Apify.Request({ keepUrlFragment: true, ...urlObj, url, userData }, { forefront: urlObj.forefront }));
-        this.debug && console.log(`[MATCHER] Queued ${requestPendingCount(reqQueue)}`, trunc(url, 150, true), { userDataSize: Object.keys(userData).length });
+        debug && console.log(`[MATCHER] Queued ${requestPendingCount(reqQueue)}`, trunc(url, 150, true), { userData });
         userData.initial && this.initialRequestsAmount++;
         
         if( (perBatch * batch) < i ){
@@ -115,7 +120,7 @@ function utils(Apify, requestQueue){
           batch++;
         }
       } else {
-        this.debug && console.log(`[MATCHER] Queuing empty url ${url}`);
+        debug && console.log(`[MATCHER] Queuing empty url ${url}`);
       }
     }
   }
@@ -281,12 +286,13 @@ function utils(Apify, requestQueue){
       await reclaimRequest(request, requestQueue, retry);
       return;
     }
+    
     // Add urls to queue
     if(!skipUrls && urls)
-      await queueUrls(result.urls, requestQueue, match.limit || limit);
+      await queueUrls(result.urls, requestQueue, { ...match, ...result });
     
     // Skip result
-    if(skip || status === 'done')
+    if(match.skip || skip || status === 'done')
       return showSkip && console.log('[MATCHER] Skipping Result', result);
     
     // Generate template
