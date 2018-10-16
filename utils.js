@@ -27,6 +27,7 @@ function utils(Apify, requestQueue){
     filterRequests,
     generateCookies,
     checkCaptcha,
+    makePageUndetectable,
     // Matcher
     getPageMatchSettings,
     pageMatcherResult,
@@ -60,12 +61,13 @@ function utils(Apify, requestQueue){
   }
   
   async function reclaimRequest(request, reqQueue, retry){
+    global.allowTurnOff = false;
     const { userData, url } = request;
     await reqQueue.addRequest(new Apify.Request({ 
       keepUrlFragment: true, 
       url, 
       userData, 
-      uniqueKey: 'reclaim_' + new Date().getTime(),
+      uniqueKey: String(`${retry ? 'retry' : 'reclaim'}_${new Date().getTime()}_${request.url}`),
       retryCount: retry ? request.retryCount + 1 : 0
     }, { forefront: retry ? false : true }));
     return;
@@ -97,6 +99,10 @@ function utils(Apify, requestQueue){
       url       = urlObj.url;
       userData  = urlObj.userData ? { ...urlObj.userData, initial } : { ...urlObj, initial };
       
+      if(url && !~url.indexOf('www') && !~url.indexOf('//')){
+        console.log(`[MATCHER] Queuing url without incorrect protocol ${url}`);
+        break;
+      }
       // TODO!!!!
       // merge matcher data to userData properly
       
@@ -137,7 +143,14 @@ function utils(Apify, requestQueue){
   }
   
   function clearNum(num){
-    return typeof num === 'string' ? parseFloat(num.replace(/(?!-)[^0-9.,]/g, '').replace(/[,]/gm, '.')) : num;
+    if(typeof num !== 'string')
+      return num || null;
+      
+    const cleared = num.replace(/(?!-)[^0-9.,]/g, '');
+    
+    return ~cleared.indexOf('.')
+      ? parseFloat(cleared.replace(/[,]/gm, ''))
+      : parseFloat(cleared.replace(/[,]/gm, '.'))
   }
   
   function onlyText(text){
@@ -399,6 +412,48 @@ function utils(Apify, requestQueue){
         : false
   }
   
+  async function makePageUndetectable(page){
+    await page.evaluateOnNewDocument(() => {
+      
+      // Hider webdrive
+      Object.defineProperty(window.navigator, 'webdriver', {
+        get: () => false,
+      });
+      
+      // Set chrome navigator props
+      window.navigator.chrome = {
+        app: {},
+        webstore: {},
+        runtime: {},
+        PlatformArch: {},
+        PlatformNaclArch: {},
+        RequestUpdateCheckStatus: {},
+        OnInstalledReason: {},
+        OnRestartRequiredReason: {}
+      };
+      
+      // Set Notifications
+      const originalQuery = window.navigator.permissions.query;
+      window.navigator.permissions.query = (parameters) => (
+        parameters.name === 'notifications' ?
+          Promise.resolve({ state: window.Notification.permission }) :
+          originalQuery(parameters)
+      );
+      
+      // Set Plugins
+      Object.defineProperty(window.navigator, 'plugins', {
+        // We can mock the plugins too if necessary.
+        get: () => [1, 2, 3, 4, 5],
+      });
+      
+      // Set Language
+      Object.defineProperty(window.navigator, 'languages', {
+        get: () => ['en-US', 'en'],
+      });
+      
+    });
+  }
+  
   function generateCookies(cookieData){
     if(!cookieData)
       return;
@@ -443,6 +498,7 @@ function utils(Apify, requestQueue){
     // Hide the puppeteer
     await page.setUserAgent(await Apify.utils.getRandomUserAgent());
     await Apify.utils.puppeteer.hideWebDriver(page);
+    await makePageUndetectable(page);
     await page.setViewport({ width: 1280, height: 800 });
     
     // Clier cookies
@@ -461,7 +517,8 @@ function utils(Apify, requestQueue){
     await page.setJavaScriptEnabled(!disableJs);
     await page.setCacheEnabled(!disableCache);
     
-    await filterRequests(page, { noRedirects, blockResources, timeout, wait, conTimeout, url }, debug);
+    if(blockResources || conTimeout)
+      await filterRequests(page, { noRedirects, blockResources, timeout, wait, conTimeout, url }, debug);
     // intercept requests
     
     console.log('[MATCHER] Opening', trunc(request.url, 150, true));
@@ -613,7 +670,7 @@ function utils(Apify, requestQueue){
         || lastSelector.includes('img')     && 'src'
         || lastSelector.indexOf('a') === 0  && 'href'
         || lastSelector.includes('meta')    && 'content'
-        || lastSelector.includes('input')   && 'value'
+        || lastSelector.includes('input') || lastSelector.includes('option') && 'value'
       return { selector, attr }
     }
     
@@ -626,9 +683,10 @@ function utils(Apify, requestQueue){
       // if(attr === 'nodeValue')
       //   return [ ...elem.childNodes ].filter(el => el.nodeType === 3).map(el => el.textContent);
       
-      return attr && attr !== 'nodeValue' 
-        ? elem.getAttribute(attr) 
-        : elem.textContent && utilsClearText(elem.textContent);
+      if(!attr || ~[ 'nodeValue', 'text', 'textContent' ].indexOf(attr))
+        return elem.textContent && utilsClearText(elem.textContent);
+      
+      return elem.getAttribute(attr);
     }
     
     function utilsClearText(text){
@@ -659,10 +717,13 @@ function utils(Apify, requestQueue){
     if(!text)
       return null;
       
-    if(~text.indexOf('£'))
+    if(~text.indexOf('£') || ~text.indexOf('GBP'))
       return 'GBP';
-    if(~text.indexOf('€'))
+    else if(~text.indexOf('€') || ~text.indexOf('EUR'))
       return 'EUR';
+    else if(~text.indexOf('AED'))
+      return 'AED';
+    
       
     return 'USD';
   }
