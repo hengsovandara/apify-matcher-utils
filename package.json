@@ -1,6 +1,6 @@
 {
   "name": "apify-matcher-utils",
-  "version": "0.0.16",
+  "version": "0.0.17",
   "description": "utils functions for apify matcher and apify",
   "main": "utils.js",
   "scripts": {
