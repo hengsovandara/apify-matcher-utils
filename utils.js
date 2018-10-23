@@ -255,11 +255,11 @@ function utils(Apify, requestQueue){
     requestQueue = requestQueue || global.requestQueue;
       
     const { request, page, response, puppeteerPool, match } = data;
-    const { template, func, schema, modify, actions, debug, evaluate, waitFor, skipResult } = match;
+    const { template, func, schema, modify, actions, debug, evaluate, waitFor, skipResult, waitForTimeout } = match;
     
     let result;
     
-    waitFor && await page.waitFor(waitFor, { visible: true });
+    waitFor && await page.waitFor(waitFor, { visible: true, timeout: waitForTimeout || 10000 });
     
     if(match.shot)
       await shot(page, typeof match.shot === 'string' && match.shot);
@@ -630,10 +630,11 @@ function utils(Apify, requestQueue){
     return;
   }
   
-  async function retireAndReclaim({ page, puppeteerPool, request }, requestQueue){
+  async function retireAndReclaim({ page, puppeteerPool, request }, requestQueue, debug){
     const browser = await page.browser();
     await puppeteerPool.retire(browser);
     await reclaimRequest(request, requestQueue);
+    debug && console.log(debug);
     return;
   }
   
