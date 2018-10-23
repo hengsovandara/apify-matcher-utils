@@ -28,9 +28,11 @@ function utils(Apify, requestQueue){
     generateCookies,
     checkCaptcha,
     makePageUndetectable,
+    retireAndReclaim,
     // Matcher
     getPageMatchSettings,
     pageMatcherResult,
+    getResponse,
     // Matcher Schema
     evaluatePage,
     modifyResult,
@@ -253,7 +255,7 @@ function utils(Apify, requestQueue){
     requestQueue = requestQueue || global.requestQueue;
       
     const { request, page, response, puppeteerPool, match } = data;
-    const { template, func, schema, modify, actions, debug, evaluate, waitFor } = match;
+    const { template, func, schema, modify, actions, debug, evaluate, waitFor, skipResult } = match;
     
     let result;
     
@@ -300,28 +302,31 @@ function utils(Apify, requestQueue){
       return;
     }
     
+    !template && debug && console.log({ result });
+    
     // Add urls to queue
     if(!skipUrls && urls)
       await queueUrls(result.urls, requestQueue, { ...match, ...result });
-    
+
     // Skip result
-    if(match.skip || skip || status === 'done')
+    if(match.skip || skipResult || skip || status === 'done')
       return showSkip && console.log('[MATCHER] Skipping Result', result);
     
     // Generate template
     if(template)
       result = result instanceof Array ? result.map(template) : template(result);
       
+    template && debug && console.log({ result });
+      
     // Adds result to Apify Store
-    !debug 
-      ? await Apify.pushData(result)
-      : console.log({ result });
+    
+    await Apify.pushData(result);
       
     return result;
   }
   
   async function filterRequests(page, filters, debug){
-    const { blockResources, wait, url, conTimeout } = filters;
+    const { blockResources, url, conTimeout } = filters;
     
     page.removeAllListeners('request');
     
@@ -334,7 +339,7 @@ function utils(Apify, requestQueue){
     const mediaTypes  = [ 'image', 'media', 'imageset', 'object' ];
     const specialTypes = [ 'beacon', 'csp_report' ];
     const styleTypes  = [ 'font', 'texttrack', 'stylesheet' ];
-    const mediaExts   = [ '.jpg', 'jpeg', '.png', '.gif' ];
+    const mediaExts   = [ '.jpg', 'jpeg', '.png', '.gif', '.svg' ];
     const styleExts   = [ '.css' ];
     const scriptExts  = [ '.js' ];
     const dataTypes   = [ 'xhr' ];
@@ -413,6 +418,10 @@ function utils(Apify, requestQueue){
   }
   
   async function makePageUndetectable(page){
+    
+    await page.setUserAgent(await Apify.utils.getRandomUserAgent());
+    await Apify.utils.puppeteer.hideWebDriver(page);
+    
     await page.evaluateOnNewDocument(() => {
       
       // Hider webdrive
@@ -454,12 +463,20 @@ function utils(Apify, requestQueue){
     });
   }
   
-  function generateCookies(cookieData){
+  function generateCookies(cookieData, { url }){
     if(!cookieData)
       return;
       
     if(cookieData instanceof Array)
       return cookieData;
+    
+    let domain;
+    if(url){
+      domain = url.split('/')[2];
+      domain = domain && domain.split('.');
+      domain[0] = '';
+      domain = domain && domain.join('.');
+    }
       
     const general = {
       // domain: '.asos.com',
@@ -470,6 +487,7 @@ function utils(Apify, requestQueue){
       secure: false,
       session: false,
       expires: new Date().getTime() + 86400000,
+      domain,
       ...(cookieData.general || {})
     }
       
@@ -480,6 +498,45 @@ function utils(Apify, requestQueue){
     }, []);
   }
   
+  async function getResponse({ page, match, request }){
+    
+    const { blockResources, conTimeout, debug, wait, waitUntil } = match;
+    const timeout = match.timeout || 30000;
+    const { url } = request;
+    
+    if(blockResources || conTimeout)
+      await filterRequests(page, { blockResources, conTimeout, url }, debug);
+      
+    if(!conTimeout)
+      return page.goto(url, { waitUntil: wait || waitUntil || 'domcontentloaded', timeout: timeout || 30000 });
+    
+      
+    let num = (timeout || 30000) / conTimeout;
+    let res;
+    
+    while(!page.isConnected && num > 0){
+      num--;
+      
+      debug && console.log('[MATCHER] Connecting', num, url);
+      
+      if(!page.isConnected){
+        page.removeAllListeners('request');
+        page.isConnected = false;
+        await page.goto('about:blank');
+        await filterRequests(page, { blockResources, conTimeout, url }, debug);
+        res = page.goto(url, { waitUntil: wait || waitUntil || 'networkidle2', timeout: timeout || 30000 });
+        await new Promise( resolve => setTimeout(resolve, conTimeout) );
+      }
+      
+      if(num <= 0){
+        throw new Error('No connection');
+      }
+    }
+
+    debug && console.log('[MATCHER] Connected', page.isConnected);
+    return res;
+    
+  }
   
   // Puppeteer Crawler predefined helper methods
   async function gotoFunction({ request, page, puppeteerPool }, extras = {}){
@@ -489,15 +546,13 @@ function utils(Apify, requestQueue){
     const client = await page.target().createCDPSession();
     const match = await getPageMatchSettings(pageMatcherSettings, request);
     const { err, msg, clearCookies, timeout, wait, blockResources, disableJs, disableCache, noRedirects, conTimeout, debug, viewport } = match;
-    const cookieData = generateCookies(match.cookies || extras.cookies);
+    const cookieData = generateCookies(match.cookies || extras.cookies, request);
     
     // These settings can be specified for every page or for pageMatcher
     if(err)
       throw(err);
     
     // Hide the puppeteer
-    await page.setUserAgent(await Apify.utils.getRandomUserAgent());
-    await Apify.utils.puppeteer.hideWebDriver(page);
     await makePageUndetectable(page);
     await page.setViewport({ width: 1280, height: 800 });
     
@@ -517,75 +572,42 @@ function utils(Apify, requestQueue){
     await page.setJavaScriptEnabled(!disableJs);
     await page.setCacheEnabled(!disableCache);
     
-    if(blockResources || conTimeout)
-      await filterRequests(page, { noRedirects, blockResources, timeout, wait, conTimeout, url }, debug);
     // intercept requests
     
     console.log('[MATCHER] Opening', trunc(request.url, 150, true));
     console.time('[MATCHER] Opened ' + trunc(request.url, 150, true));
     
-    let response;
-    
-    if(conTimeout){
-      
-      let num = (timeout || 30000) / conTimeout;
-      let res;
-      
-      while(!page.isConnected && num > 0){
-        num--;
-        page.removeAllListeners('request');
-        await page.goto('about:blank');
-        
-        if(!page.isConnected){
-          await filterRequests(page, { noRedirects, blockResources, timeout, wait, conTimeout, url }, false);
-          res = page.goto(url, { waitUntil: wait || 'networkidle2', timeout: timeout || 30000 });
-        }
-        
-        await new Promise( resolve => setTimeout(resolve, conTimeout) );
-        
-        if(num <= 0){
-          throw 'TimeoutError';
-        }
-      }
-  
-      // console.log('PAGE IS CONNECTED', page.isConnected);
-      response = await res;
-    
-    } else {
-      // await filterRequests(page, { noRedirects, blockResources, timeout, wait, conTimeout, url }, false);
-      response = await page.goto(url, { waitUntil: wait || 'domcontentloaded', timeout: timeout || 30000 });
-    
-    }
-    
-    if(clearCookies)
+    if(clearCookies && !cookieData)
       await client.send( 'Network.clearBrowserCookies' );
     
-    return response;
+    return getResponse({ request, page, match });
   }
 
   async function handlePageFunction(data, extras = {}){
     
     const { pageMatcherSettings, requestQueue, evaluate } = extras;
     
+    if(pageMatcherSettings)
+      data.match = await getPageMatchSettings(pageMatcherSettings, data.request);
+    
     let result;
     
-    if(await checkCaptcha(data.page) || data.response.status() > 400){
+    if(data.match){
       
-      const browser = await data.page.browser();
-      await data.puppeteerPool.retire(browser);
+      if(typeof data.match.check === 'function'){
+        const checkRes = await data.match.check(data, extras);
+        if(!checkRes) return;
+      }
       
-      await reclaimRequest(data.request, requestQueue);
+      if(!data.match.disableCaptchaCheck && await checkCaptcha(data.page))
+        return await retireAndReclaim(data, requestQueue, 'CAPTCHA');
         
-      console.log('CAPTCHA or STATUS error', data.response.status());
-      
-      return;
-      // throw 'RECLAIM';
-    }
-    
-    if(pageMatcherSettings){
-      data.match = await getPageMatchSettings(pageMatcherSettings, data.request);
+      if(!data.match.disableStatusCheck && ~[403].indexOf(data.response.status()))
+        return await retireAndReclaim(data, requestQueue, 'STATUS ' + data.response.status());
+        
       result = await pageMatcherResult(data, requestQueue);
     }
+      
     
     console.timeEnd('[MATCHER] Opened ' + trunc(data.request.url, 150, true));
     
@@ -605,6 +627,13 @@ function utils(Apify, requestQueue){
     await new Promise(res => setTimeout(res, 5000));
     console.log('[MATCHER] Delay actors turn off time by', 5 + 's');
     global.allowTurnOff = true;
+    return;
+  }
+  
+  async function retireAndReclaim({ page, puppeteerPool, request }, requestQueue){
+    const browser = await page.browser();
+    await puppeteerPool.retire(browser);
+    await reclaimRequest(request, requestQueue);
     return;
   }
   
@@ -766,25 +795,3 @@ module.exports = utils;
 // let num = 30;
 
 // let pageGoto = page.goto(url, { waitUntil: wait || 'domcontentloaded', timeout: timeout || 30000 });
-
-// let res;
-// while(!page.isConnected && num > 0){
-//   num--;
-//   console.log(num);
-//   page.removeAllListeners('request');
-//   await page.goto('about:blank');
-  
-//   await filterRequests(page, { noRedirects, blockResources, timeout, wait, conTimeout, url });
-//   res = page.goto(url, { waitUntil: wait || 'domcontentloaded', timeout: timeout || 30000 });
-//   res.catch(err => { throw(err) });
-//   await new Promise( resolve => setTimeout(resolve, 5000) );
-// }
-
-// console.log('PAGE IS CONNECTED', page.isConnected);
-// const response = await res;
-
-// console.log(response);
-
-
-
-// const response = await page.goto(url, { waitUntil: wait || 'domcontentloaded', timeout: timeout || 30000 });
