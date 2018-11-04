@@ -40,6 +40,8 @@ function utils(Apify, requestQueue){
     gotoFunction,
     handlePageFunction,
     isFinishedFunction,
+    // launchers
+    startPuppeteerMatcher
   }
   
   async function wait(delay){
@@ -655,6 +657,57 @@ function utils(Apify, requestQueue){
       default:
         return result;
     }
+  }
+  
+  function startPuppeteerMatcher(config){
+    
+      return async () => {
+        // Configs
+        const INPUT   = await Apify.getValue('INPUT');
+        config = typeof config === 'function' ? await config(Apify, { INPUT }) : config;
+        
+        config.puppteer = config.puppteer || {
+          headless: true,
+          useChrome: false,
+          userAgent: await Apify.utils.getRandomUserAgent(),
+          ignoreHTTPSErrors: true,
+          useApifyProxy: true,
+          apifyProxyGroups: [ 'BUYPROXIES94952' ],
+        }
+        
+        config.crawler = config.crawler || {
+          maxRequestRetries: 1,
+          retireInstanceAfterRequestCount: 10,
+          minConcurrency: INPUT.minConcurrency || INPUT.concurrency || 2,
+          maxConcurrency: INPUT.maxConcurrency || INPUT.concurrency || 5,
+          handlePageTimeoutSecs: 3000,
+          launchPuppeteerOptions: config.puppteer
+        }
+        
+        // Variables
+        const { limit } = INPUT;
+        const { startUrls, cookies, webhook } = config.main;
+        
+        // Requests
+        const requestQueue = global.requestQueue = await Apify.openRequestQueue();
+        queueUrls(startUrls, requestQueue, limit);
+        
+        // Crawler
+        const crawler = new Apify.PuppeteerCrawler({
+          requestQueue,
+          ...config.crawler,
+          handlePageFunction: async data => await handlePageFunction(data, { pageMatcherSettings: config.matcher, requestQueue }),
+          gotoFunction: async data => await gotoFunction(data, { pageMatcherSettings: config.matcher, requestQueue, cookies }),
+          autoscaledPoolOptions: {
+            isFinishedFunction: async () => await isFinishedFunction(webhook),
+          },
+          handleFailedRequestFunction: (data) => {
+            console.log('FAILED', { data });
+          }
+        });
+        
+        await crawler.run();
+      }
   }
   
   function evaluatePage({ schema, extras }){
