@@ -103,7 +103,7 @@ function utils(Apify, requestQueue){
         
         urlObj    = typeof urls[i] === 'string' ? { url: urls[i] } : urls[i];
         url       = urlObj.url;
-        userData  = urlObj.userData ? { ...urlObj.userData, initial } : { ...urlObj, initial };
+        userData  = urlObj.userData ? { ...urlObj.userData } : { ...urlObj };
         
         if(url && !~url.indexOf('www') && !~url.indexOf('//')){
           console.log(`[MATCHER] Queuing url with incorrect protocol ${url}`);
@@ -115,10 +115,10 @@ function utils(Apify, requestQueue){
         delete userData.reclaim;
         delete urlObj.id;
         
-        if(initial){
-          delete userData.url;
-          delete userData.urls;
-        }
+        // if(initial){
+        //   delete userData.url;
+        delete userData.urls;
+        // }
         
         if(url && url.length){
           // console.log({ keepUrlFragment: true, ...urlObj, url, userData }, { forefront: urlObj.forefront });
