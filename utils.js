@@ -97,42 +97,45 @@ function utils(Apify, requestQueue){
     let batch = 1, perBatch = 100, delayAfterBatch = 5000;
     
     console.log(`[MATCHER] Queuing ${urls.length} + ${requestPendingCount(reqQueue)}`);
-    for(i in urls){
-      
-      urlObj    = typeof urls[i] === 'string' ? { url: urls[i] } : urls[i];
-      url       = urlObj.url;
-      userData  = urlObj.userData ? { ...urlObj.userData, initial } : { ...urlObj, initial };
-      
-      if(url && !~url.indexOf('www') && !~url.indexOf('//')){
-        console.log(`[MATCHER] Queuing url without incorrect protocol ${url}`);
-        break;
-      }
-      // TODO!!!!
-      // merge matcher data to userData properly
-      
-      delete userData.reclaim;
-      delete urlObj.id;
-      
-      if(initial){
-        delete userData.url;
-        delete userData.urls;
-      }
-      
-      if(url && url.length){
-        // console.log({ keepUrlFragment: true, ...urlObj, url, userData }, { forefront: urlObj.forefront });
-        await reqQueue.addRequest(new Apify.Request({ keepUrlFragment: true, ...urlObj, url, userData }, { forefront: urlObj.forefront }));
-        debug && console.log(`[MATCHER] Queued ${requestPendingCount(reqQueue)}`, trunc(url, 150, true), { userData });
-        userData.initial && this.initialRequestsAmount++;
+    
+    try{
+      for(i in urls){
         
-        if( (perBatch * batch) < i ){
-          console.log(`[MATCHER] Queued ${perBatch * batch} / ${urls.length}`);
-          await Apify.utils.sleep(delayAfterBatch);
-          batch++;
+        urlObj    = typeof urls[i] === 'string' ? { url: urls[i] } : urls[i];
+        url       = urlObj.url;
+        userData  = urlObj.userData ? { ...urlObj.userData, initial } : { ...urlObj, initial };
+        
+        if(url && !~url.indexOf('www') && !~url.indexOf('//')){
+          console.log(`[MATCHER] Queuing url with incorrect protocol ${url}`);
+          break;
         }
-      } else {
-        debug && console.log(`[MATCHER] Queuing empty url ${url}`);
+        // TODO!!!!
+        // merge matcher data to userData properly
+        
+        delete userData.reclaim;
+        delete urlObj.id;
+        
+        if(initial){
+          delete userData.url;
+          delete userData.urls;
+        }
+        
+        if(url && url.length){
+          // console.log({ keepUrlFragment: true, ...urlObj, url, userData }, { forefront: urlObj.forefront });
+          await reqQueue.addRequest(new Apify.Request({ keepUrlFragment: true, ...urlObj, url, userData }, { forefront: urlObj.forefront }));
+          console.log(`[MATCHER] Queued ${requestPendingCount(reqQueue)}`, trunc(url, 150, true), { userData });
+          userData.initial && this.initialRequestsAmount++;
+          
+          if( (perBatch * batch) < i ){
+            console.log(`[MATCHER] Queued ${perBatch * batch} / ${urls.length}`);
+            await Apify.utils.sleep(delayAfterBatch);
+            batch++;
+          }
+        } else {
+          debug && console.log(`[MATCHER] Queuing empty url ${url}`);
+        }
       }
-    }
+    } catch(err){ console.log(err) }
   }
   
   function requestPendingCount(rq, cr){
@@ -620,14 +623,16 @@ function utils(Apify, requestQueue){
   }
   
   async function isFinishedFunction(func){
+    const delayTime = 10000;
+    
     if(global.allowTurnOff){
       func && await func();
       console.log('[MATCHER] Actor Done');
       return true;
     }
     
-    await new Promise(res => setTimeout(res, 5000));
-    console.log('[MATCHER] Delay actors turn off time by', 5 + 's');
+    await new Promise(res => setTimeout(res, delayTime));
+    console.log('[MATCHER] Delay actors turn off time by', (delayTime/1000) + 's');
     global.allowTurnOff = true;
     return;
   }
