@@ -743,7 +743,7 @@ function utils(Apify, requestQueue){
       }
       
       if(rule instanceof Array){
-        debug ? obj[`_${key}`] = { ...ruleToObj(rule), rule } : null;
+        debug ? obj[`_${key}`] = rule.map( r => { ...ruleToObj(r), rule: r }) : null;
         return Object.assign( obj, { [key]: rule.map( r => stringResult(ruleToObj(r))) });
       }
       
