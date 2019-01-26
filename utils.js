@@ -319,7 +319,7 @@ function utils(Apify, requestQueue){
     
     // Generate template
     if(template)
-      result = result instanceof Array ? result.map(template) : template(result);
+      result = result instanceof Array ? result.map(template) : await template(result);
       
     template && debug && console.log({ result });
       
