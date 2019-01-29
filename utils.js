@@ -284,9 +284,10 @@ function utils(Apify, requestQueue){
     
     if(evaluate)
       result = await page.evaluate(evaluate, { match, result });
-    
-    if(modify)
-      result = await modifyResult(result, modify, { url: request.url, ...request.userData });
+
+    if(modify){
+      result = await modifyResult(result, modify, { url: request.url, ...request.userData }, page);
+    }
       
     if(actions && actions.after)
       result = await actions.after(data, result);
@@ -645,7 +646,7 @@ function utils(Apify, requestQueue){
     return;
   }
   
-  function modifyResult(result, modify, userData){
+  function modifyResult(result, modify, userData, page){
     // console.log({ result, modify, userData });
     switch(typeof modify){
       case 'function':
@@ -654,7 +655,7 @@ function utils(Apify, requestQueue){
         Object.keys(modify).forEach( key => {
           
           result[key] = typeof modify[key] === 'function'
-            ? modify[key](result[key], result, userData) || result[key] || null
+            ? modify[key](result[key], result, userData, page) || result[key] || null
             : result[key] = result[key] || modify[key];
             
         });
@@ -744,7 +745,7 @@ function utils(Apify, requestQueue){
       
       if(rule instanceof Array){
         debug ? obj[`_${key}`] = rule.map( r => ({ ...ruleToObj(r), rule: r })) : null;
-        return Object.assign( obj, { [key]: rule.map( r => stringResult(ruleToObj(r))) });
+        return Object.assign( obj, { [key]: rule.map( r => stringResult(ruleToObj(r)))});
       }
       
       return Object.assign( obj, { [key]: rule });
